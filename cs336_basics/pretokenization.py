@@ -1,12 +1,20 @@
 import os
-from typing import BinaryIO
+import queue
+import regex as re
+import multiprocessing as mp
+from typing import BinaryIO, List, Tuple
+from collections import Counter
+
+PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+pretokenize = re.compile(PAT)
+
 
 
 def find_chunk_boundaries(
     file: BinaryIO,
     desired_num_chunks: int,
     split_special_token: bytes,
-) -> list[int]:
+) -> List[int]:
     """
     Chunk the file into parts that can be counted independently.
     May return fewer chunks if the boundaries end up overlapping.
@@ -49,6 +57,7 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 
+"""
 ## Usage
 with open(..., "rb") as f:
     num_processes = 4
@@ -60,3 +69,73 @@ with open(..., "rb") as f:
         f.seek(start)
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
         # Run pre-tokenization on your chunk and store the counts for each pre-token
+"""
+
+
+
+def split_text(text: str, special_tokens: List[str]) -> List[str]:
+    if not special_tokens:
+        return [text]
+    
+    pattern = "|".join(re.escape(token) for token in special_tokens)
+    segments = re.split(pattern, text)
+    
+    return [s for s in segments if s]
+
+
+
+def pretokenize_by_chunk(
+        input_path: str | os.PathLike,
+        start: int,
+        end: int,
+        special_tokens: List[str],
+        q
+):
+    """
+    pre-tokenize for each chunk and store the counts for each pre-token
+    """
+    counter = Counter()
+
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        text = f.read(end - start).decode("utf-8", errors="ignore")
+        segments = split_text(text, special_tokens)
+        
+        for segment in segments:
+            pre_tokens = pretokenize.findall(segment)
+            byte_pre_tokens = [bytes(pre_token, "utf-8") for pre_token in pre_tokens]
+            byte_tuple_tokens = [tuple(bytes([x]) for x in b) for b in byte_pre_tokens]
+
+            counter.update(byte_tuple_tokens)
+
+    q.put(counter)
+
+
+
+def parallelize_pretokenization(
+        input_path: str | os.PathLike,
+        num_process: int,
+        special_tokens: List[str],
+)-> Counter[Tuple[bytes, ...]]:
+    q = mp.Queue()
+    processes = []
+    total_count = Counter()
+
+    with open(input_path, "rb") as f:
+        boundaries = find_chunk_boundaries(f, num_process, b"<|endoftext|>")
+
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            p = mp.Process(target= pretokenize_by_chunk, args=(input_path, start, end, special_tokens, q))
+            processes.append(p)
+        
+        for p in processes:
+            p.start()
+
+        for _ in range(len(processes)):
+            total_count += q.get()
+
+        for p in processes:
+            p.join()
+        
+
+    return total_count
