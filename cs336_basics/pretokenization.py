@@ -102,11 +102,12 @@ def pretokenize_by_chunk(
         segments = split_text(text, special_tokens)
         
         for segment in segments:
-            pre_tokens = pretokenize.findall(segment)
-            byte_pre_tokens = [bytes(pre_token, "utf-8") for pre_token in pre_tokens]
-            byte_tuple_tokens = [tuple(bytes([x]) for x in b) for b in byte_pre_tokens]
+            for match in pretokenize.finditer(segment):
+                token_str = match.group()
+                token_bytes = token_str.encode("utf-8")
+                token_tuple = tuple(bytes([b]) for b in token_bytes)
 
-            counter.update(byte_tuple_tokens)
+                counter[token_bytes] += 1
 
     q.put(counter)
 
