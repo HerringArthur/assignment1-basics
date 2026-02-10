@@ -1,10 +1,10 @@
 import os
 from typing import List
-from pretokenization import parallelize_pretokenization
-from utils import Node, DoublyLinkedList, IndexedMaxHeap
+from cs336_basics.pretokenization import parallelize_pretokenization
+from cs336_basics.utils import Node, DoublyLinkedList, IndexedMaxHeap
 
 class BPEtokenizer:
-    def __init__(self, special_token: List[bytes], vocab_size: int):
+    def __init__(self, special_token: List[str], vocab_size: int):
         self.vocab = {}
         self.reverse_vocab = {}
         self.vocab_size = vocab_size
@@ -16,7 +16,7 @@ class BPEtokenizer:
             self.reverse_vocab[token] = i
 
         for i in range(len(special_token)):
-            token = special_token[i]
+            token = special_token[i].encode("utf-8")
             self.vocab[i+256] = token
             self.reverse_vocab[token] = i+256
 
@@ -32,7 +32,7 @@ def train_bpe(
         input_path: str | os.PathLike,
         num_process: int,
 ):
-   special_tokens = [Tokenizer.vocab[i] for i in range(256, Tokenizer.vocab_size) if i in Tokenizer.vocab]
+   special_tokens = [Tokenizer.vocab[i].decode("utf-8") for i in range(256, Tokenizer.vocab_size) if i in Tokenizer.vocab]
    total_count = parallelize_pretokenization(input_path, num_process, special_tokens)
    vocab_chains = []
 
@@ -60,6 +60,7 @@ def train_bpe(
            PositionDictionory[pair].append(nodes[i])
        
    tokenizer = Tokenizer
+   invalidated_nodes = set()
 
    def merge():
        pair, freq = StatisticsHeap.pop()
@@ -67,22 +68,29 @@ def train_bpe(
        tokenizer.merges.append(pair)
 
        for node in nodes:
+           if node in invalidated_nodes:
+               continue
+           if node.value != pair[0] or node.next is None or node.next.value != pair[1]:
+               continue
+           
            node_freq = node.freq
            if node.prev:
                old_left_pair = (node.prev.value, node.value)
                StatisticsHeap.push(old_left_pair, -node_freq)
-           if node.next.next:
+           if node.next and node.next.next:
                old_right_pair = (node.next.value, node.next.next.value)
                StatisticsHeap.push(old_right_pair, -node_freq)
-
-           new_token = node.value + node.next.value
-           node.value = new_token
-           node_to_remove = node.next
-           if node_to_remove.next:
-               node_to_remove.next.prev = node
-               node.next = node_to_remove.next
-           else:
-               node.next = None
+           
+           if node.next:
+               new_token = node.value + node.next.value
+               node.value = new_token
+               node_to_remove = node.next
+               invalidated_nodes.add(node_to_remove)
+               if node_to_remove.next:
+                   node_to_remove.next.prev = node
+                   node.next = node_to_remove.next
+               else:
+                   node.next = None
                
            
            if node.prev:
@@ -96,7 +104,7 @@ def train_bpe(
                if new_right_pair not in PositionDictionory: PositionDictionory[new_right_pair] = []
                PositionDictionory[new_right_pair].append(node)
 
-           del PositionDictionory[pair]
+       del PositionDictionory[pair]
 
 
        tokenizer.update(pair[0]+pair[1])

@@ -134,7 +134,9 @@ class IndexedMaxHeap:
     def _sift_up(self, i):
         while i > 0:
             p = self._parent(i)
-            if self.data[p][0] >= self.data[i][0]:
+            if self.data[p][0] > self.data[i][0]:
+                break
+            if self.data[p][0] == self.data[i][0] and self.data[p][1] > self.data[i][1]:
                 break
             self._swap(i, p)
             i = p
@@ -148,8 +150,13 @@ class IndexedMaxHeap:
 
             if l < n and self.data[l][0] > self.data[largest][0]:
                 largest = l
+            if l < n and self.data[l][0] == self.data[largest][0] and self.data[l][1] > self.data[largest][1]:
+                largest = l
             if r < n and self.data[r][0] > self.data[largest][0]:
                 largest = r
+            if r < n and self.data[r][0] == self.data[largest][0] and self.data[r][1] > self.data[largest][1]:
+                largest = r
+            
 
             if largest == i:
                 break

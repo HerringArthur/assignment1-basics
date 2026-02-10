@@ -592,8 +592,8 @@ def run_train_bpe(
     """
 
     tokenizer = BPEtokenizer(special_tokens, vocab_size)
-    train_bpe(tokenizer, input_path, num_process=1)
+    train_bpe(tokenizer, input_path, num_process=4)
 
-    return tokenizer.vocab, tokenizer.merges
+    return (tokenizer.vocab, tokenizer.merges)
 
     raise NotImplementedError
