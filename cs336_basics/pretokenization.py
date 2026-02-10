@@ -8,7 +8,7 @@ from collections import Counter
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 pretokenize = re.compile(PAT)
 
-
+BYTES_CACHE = {i: bytes([i]) for i in range(256)}
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -105,8 +105,8 @@ def pretokenize_by_chunk(
             for match in pretokenize.finditer(segment):
                 token_str = match.group()
                 token_bytes = token_str.encode("utf-8")
-                token_tuple = tuple(bytes([b]) for b in token_bytes)
-
+                token_tuple = tuple(BYTES_CACHE[b] for b in token_bytes)
+                
                 counter[token_bytes] += 1
 
     q.put(counter)
