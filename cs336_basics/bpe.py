@@ -3,11 +3,15 @@ import json
 import time
 import tracemalloc
 import logging
-from typing import List
+import regex as re
+from typing import Dict, Tuple, List, Iterable, Iterator, Optional
 from tqdm import tqdm
 from datetime import datetime
 from cs336_basics.pretokenization import parallelize_pretokenization
 from cs336_basics.utils import Node, DoublyLinkedList, IndexedMaxHeap
+
+PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+pretokenizer = re.compile(PAT)
 
 def setup_logging(log_file="training.log"):
     logger = logging.getLogger()
@@ -35,21 +39,33 @@ logger = logging.getLogger(__name__)
 
 
 class BPEtokenizer:
-    def __init__(self, special_token: List[str], vocab_size: int):
-        self.vocab = {}
+    def __init__(self, 
+                 vocab: Optional[Dict[int, bytes]] = None, 
+                 merges: Optional[List[Tuple[bytes, bytes]]] = None,
+                 special_tokens: Optional[List[str]] = None, 
+      ):
+        self.vocab = vocab if vocab is not None else {}
+        self.merges = merges if merges is not None else []
+        self.special_tokens = special_tokens if special_tokens is not None else []
+
         self.reverse_vocab = {}
-        self.vocab_size = vocab_size
-        self.merges = []
 
-        for i in range(256):
-            token = bytes([i])
-            self.vocab[i] = token
-            self.reverse_vocab[token] = i
 
-        for i in range(len(special_token)):
-            token = special_token[i].encode("utf-8")
-            self.vocab[i+256] = token
-            self.reverse_vocab[token] = i+256
+        if not self.vocab:
+            for i in range(256):
+                token = bytes([i])
+                self.vocab[i] = token
+            
+            for token_str in self.special_tokens:
+                token_bytes = token_str.encode("utf-8")
+                if token_bytes not in self.vocab.values():
+                    new_id = len(self.vocab)
+                    self.vocab[new_id] = token_bytes
+
+        for idx, token in self.vocab.items():
+            self.reverse_vocab[token] = idx
+
+        self.vocab_size = len(self.vocab)
 
     
     def update(self, token: bytes):
@@ -57,38 +73,108 @@ class BPEtokenizer:
         self.vocab[next_token_ID] = token
         self.reverse_vocab[token] = next_token_ID
 
+    def encode(self, text: str) -> list[int]:
+        if len(self.special_tokens) > 0:
+            sorted_special_tokens = sorted(self.special_tokens, key=len, reverse=True)
+            pattern = "(" + "|".join(re.escape(token) for token in sorted_special_tokens) + ")"
+            segments = re.split((pattern), text)
+        else:
+            segments = [text]
 
-    def save(self, file_path:str):
-        data = {
-            "vocab_size": self.vocab_size,
-            "vocab": {str(idx): token.decode("latin-1") for idx, token in self.vocab.items()},
-            "merges": [(pair[0].decode("latin-1"), pair[1].decode("latin-1")) for pair in self.merges]
-        }
+        pretokens_str = []
+        for segment in segments:
+            if segment not in self.special_tokens:
+                pretoken_str = pretokenizer.findall(segment)
+            else:
+                pretoken_str = [segment]
+            pretokens_str += pretoken_str
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"Model saved to {file_path}")
+        tokens = []
+        for pretoken_str in pretokens_str:
+            if pretoken_str in self.special_tokens:
+                 token_bytes = pretoken_str.encode("utf-8")
+                 if token_bytes in self.reverse_vocab:
+                     tokens.append(self.reverse_vocab[token_bytes])
+                     continue
+
+            pretoken_bytes_list = [bytes([b]) for b in pretoken_str.encode("utf-8")]
+            
+            for left, right in self.merges:
+                if len(pretoken_bytes_list) == 1:
+                    break
+                
+                i = 0
+                while i < len(pretoken_bytes_list) - 1:
+                    if pretoken_bytes_list[i] == left and pretoken_bytes_list[i+1] == right:
+                        new_token = left + right
+                        pretoken_bytes_list[i:i+2] = [new_token]
+                    else:
+                        i += 1
+            
+            for token_bytes in pretoken_bytes_list:
+                if token_bytes in self.reverse_vocab:
+                    tokens.append(self.reverse_vocab[token_bytes])
+                else:
+                    print(f"[Warning] Unknown token bytes: {token_bytes}")
+                    
+        return tokens
+      
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        for text in iterable:
+            tokens = self.encode(text)
+            for token in tokens:
+                yield token
+
+    def decode(self, ids: list[int]) -> str:
+        tokens = []
+        for id in ids:
+            tokens.append(self.vocab[id])
+        decoded_bytes = b"".join(tokens)
+
+        text = decoded_bytes.decode('utf-8', errors='replace')
+
+        return text
+
+    def save(self, vocab_filepath: str, merges_filepath: str):
+        vocab = {str(idx): token.decode("latin-1") for idx, token in self.vocab.items()}
+        merges = [(pair[0].decode("latin-1"), pair[1].decode("latin-1")) for pair in self.merges]
+
+        with open(vocab_filepath, "w", encoding="utf-8") as f:
+            json.dump(vocab, f, ensure_ascii=False, indent=2)
+        with open(merges_filepath, "w", encoding="utf-8") as f:
+            json.dump(merges, f, ensure_ascii= False, indent=2)
+         
+        print(f"vocab saved to {vocab_filepath}, merges saved to {merges_filepath}")
 
    
     @classmethod
-    def load(cls, flie_path:str):
-        with open(flie_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    def from_files(cls, 
+                   vocab_filepath: str, 
+                   merges_filepath: str, 
+                   special_tokens: list[str] | None = None
+      ):
+        with open(vocab_filepath, "r", encoding="utf-8") as f:
+               vocab = json.load(f)
+        with open(merges_filepath, "r", encoding="utf-8") as f:
+               merges = json.load(f)
             
-        tokenizer = cls(special_token=[], vocab_size=data["vocab_size"])
+        tokenizer = cls(special_token=[], vocab_size=len(vocab))
         
         tokenizer.vocab = {}
         tokenizer.reverse_vocab = {}
-        for idx_str, token_str in data["vocab"].items():
+        for idx_str, token_str in vocab.items():
             idx = int(idx_str)
             token_bytes = token_str.encode("latin-1") 
             tokenizer.vocab[idx] = token_bytes
             tokenizer.reverse_vocab[token_bytes] = idx
             
         tokenizer.merges = []
-        for p in data["merges"]:
+        for p in merges:
             pair = (p[0].encode("latin-1"), p[1].encode("latin-1"))
             tokenizer.merges.append(pair)
+
+        tokenizer.special_tokens = special_tokens if special_tokens is not None else []
             
         return tokenizer
 
@@ -176,9 +262,9 @@ def train_bpe(
                PositionDictionory[new_right_pair].append(node)
 
        del PositionDictionory[pair]
-
-
        tokenizer.update(pair[0]+pair[1])
+       
+       return True
 
    logger.info("Starting Merge loop...")
    merge_num = tokenizer.vocab_size - len(tokenizer.vocab)
@@ -209,7 +295,7 @@ if __name__ == "__main__":
     base_name = os.path.splitext(args.save_path)[0]
     log_filename = f"{base_name}_{timestamp}.log"
     logger = setup_logging(log_filename)
-    
+
     logger.info(f"Log file will be saved to: {log_filename}")
 
     special_tokens = ["<|endoftext|>"]

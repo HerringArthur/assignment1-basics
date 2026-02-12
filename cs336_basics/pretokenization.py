@@ -106,8 +106,8 @@ def pretokenize_by_chunk(
                 token_str = match.group()
                 token_bytes = token_str.encode("utf-8")
                 token_tuple = tuple(BYTES_CACHE[b] for b in token_bytes)
-                
-                counter[token_bytes] += 1
+
+                counter[token_tuple] += 1
 
     q.put(counter)
 
